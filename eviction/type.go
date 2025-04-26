@@ -19,13 +19,13 @@ func (e *Entry) UpdatedTTLTime() {
 	e.updateAt = time.Now()
 }
 
-// Expired 判断该缓存是否过期
+// Expired 判断该缓存是否“未过期”
 func (e *Entry) Expired(duration time.Duration) bool {
 	// 未设置过期时间则永不过期
 	if e.updateAt.IsZero() {
 		return false
 	}
-	// 如果缓存的updateAt，加上TTL时间后已经过去了当前时间，则返回true
+	// 如果缓存的 updateAt + TTL <= now，则返回true
 	// 表示这个条目已经过期 (即: 已经过去了TTL分钟)
 	return e.updateAt.Add(duration).Before(time.Now())
 }
