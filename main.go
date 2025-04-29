@@ -2,11 +2,14 @@ package main
 
 import (
 	"FishCache/internal/cache"
+	"flag"
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 )
 
 // 假定一个数据库
@@ -16,29 +19,45 @@ var testDB = map[string]string{
 	"Sam":  "567",
 }
 
-func createGroup() *cache.Group {
+func createScoresGroup() *cache.Group {
 	return cache.NewGroup("scores", 2<<10, cache.GetterFunc(
 		func(key string) ([]byte, error) {
 			if value, exists := testDB[key]; exists {
-				log.Printf("[testDB] load key %s\n", key)
+				log.Printf("Load local key: %s\n", key)
 				return []byte(value), nil
 			}
-			log.Printf("[testDB] load key %s failed\n", key)
-			return nil, fmt.Errorf("%s not exist", key)
+			log.Printf("Load local key: %s failed\n", key)
+			return []byte(""), nil
 		}),
 	)
 }
 
 func main() {
+	// 外部传参
+	var port int
+	var peers []string
+	flag.IntVar(&port, "port", 23333, "FishCache server port") // 服务运行端口
+	flag.Func("peers", "A list of peers separated by commas", func(s string) error {
+		// 将输入的字符串按照逗号分隔并转换为切片
+		peers = strings.Split(s, ",")
+		return nil
+	})
+	flag.Parse()
+	// 日志初始化
 	logInit()
-	createGroup()
-	addr := "localhost:23333"
+	// 缓存组初始化
+	var groups []*cache.Group
+	scoresGroup := createScoresGroup()
+	groups = append(groups, scoresGroup)
+	// RPC服务初始化
+	addr := "127.0.0.1:" + strconv.Itoa(port)
 	svr, err := cache.NewRPCServer(addr)
 	if err != nil {
 		log.Fatalf("acquire grpc server instance failed, %v", err)
 	}
-	//svr.SetPeers()
-
+	// 设置节点与缓存组的一致性
+	svr.SetPeers(peers, groups)
+	// 运行服务
 	err = svr.Run()
 	// grpcurl -plaintext -d "{\"group\": \"scores\", \"key\": \"Tom\"}" 127.0.0.1:23333 fishcache.CacheService/Get
 	if err != nil {

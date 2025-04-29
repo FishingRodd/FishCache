@@ -3,6 +3,7 @@ package cache
 import (
 	"FishCache/internal/cache/eviction"
 	"fmt"
+	log "github.com/sirupsen/logrus"
 	"sync"
 )
 
@@ -18,7 +19,7 @@ func NewCache(maxBytes int64) (*cache, error) {
 	}
 
 	onEvicted := func(key string, val eviction.Value) {
-		fmt.Printf("Cache entry evicted: key=%s\n", key)
+		log.Warnf("Cache entry evicted: key=%s\n", key)
 	}
 	return &cache{
 		maxBytes: maxBytes,

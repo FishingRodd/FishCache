@@ -43,6 +43,12 @@ func (m *ConsistentMap) AddNodes(nodes ...string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.keys = nil                     // 清空之前的keys
+	m.hashMap = make(map[int]string) // 清空之前的hashMap
+
+	// 对节点名称进行排序
+	sort.Strings(nodes)
+
 	// 对每一个真实节点 node，对应创建 m.replicas 个虚拟节点。缓解真实节点少时的数据倾斜问题。
 	for _, nodeName := range nodes {
 		for i := 0; i < m.replicas; i++ {
@@ -58,7 +64,7 @@ func (m *ConsistentMap) AddNodes(nodes ...string) {
 }
 
 // GetNode 返回指定key的对应节点
-func (m *ConsistentMap) GetNode(nodeName string) string {
+func (m *ConsistentMap) GetNode(key string) string {
 	if len(m.keys) == 0 {
 		return ""
 	}
@@ -67,7 +73,7 @@ func (m *ConsistentMap) GetNode(nodeName string) string {
 	defer m.mu.RUnlock()
 
 	// 第一步，计算 key 的哈希值。
-	hash := int(m.hash([]byte(nodeName)))
+	hash := int(m.hash([]byte(key)))
 	// 第二步，顺时针找到第一个匹配的虚拟节点的下标 idx
 	index := sort.Search(len(m.keys), func(i int) bool {
 		// 当前节点hash >= 当前key hash时，则为该key对应的处理节点

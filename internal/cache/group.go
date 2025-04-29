@@ -2,7 +2,9 @@ package cache
 
 import (
 	"fmt"
+	log "github.com/sirupsen/logrus"
 	"sync"
+	"time"
 )
 
 var (
@@ -11,10 +13,11 @@ var (
 )
 
 type Group struct {
-	name   string // 一个 Group 可以认为是一个缓存的命名空间，每个 Group 拥有一个唯一的名称 name
-	cache  *cache // 缓存值
-	getter Getter //缓存未命中时获取源数据的回调(callback)
-	peers  HashPeerPicker
+	name   string         // 一个 Group 可以认为是一个缓存的命名空间，每个 Group 拥有一个唯一的名称 name
+	cache  *cache         // 缓存值
+	getter Getter         //缓存未命中时获取源数据的回调(callback)
+	peers  HashPeerPicker // 包含一致性哈希的节点选择器
+	flight *SingleFlight  // 防止瞬时高并发的数据结构
 }
 
 func NewGroup(name string, maxBytes int64, getter Getter) *Group {
@@ -33,6 +36,7 @@ func NewGroup(name string, maxBytes int64, getter Getter) *Group {
 		name:   name,
 		getter: getter,
 		cache:  cache,
+		flight: NewFlightGroup(5 * time.Second),
 	}
 	GroupManager[name] = group
 
@@ -69,16 +73,28 @@ func (g *Group) Get(key string) (ByteView, error) {
 }
 
 func (g *Group) load(key string) (ByteView, error) {
-	if g.peers != nil {
-		// 由一致性哈希环判断当前key所在的节点
-		if peer, ok := g.peers.PickPeer(key); ok {
-			if value, err := g.getFromPeer(peer, key); err == nil {
-				return value, err
+	// flight Do封装获取方法，避免高峰请求，实现类单例功能
+	viewi, err := g.flight.Do(key, func() (interface{}, error) {
+		if g.peers != nil {
+			// 由一致性哈希环判断当前key所在的节点
+			if peer, ok := g.peers.PickPeer(key); ok {
+				// 从远程节点获取
+				if value, err := g.getFromPeer(peer, key); err == nil {
+					log.Printf("Load remote key: %s\n", key)
+					return value, err
+				} else {
+					log.Fatalln(err)
+				}
 			}
 		}
-	}
 
-	return g.getLocally(key)
+		return g.getLocally(key)
+	})
+
+	if err != nil {
+		return ByteView{}, err
+	}
+	return viewi.(ByteView), nil
 }
 
 func (g *Group) getLocally(key string) (ByteView, error) {

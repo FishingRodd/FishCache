@@ -4,6 +4,7 @@ import (
 	pb "FishCache/api/groupcachepb"
 	"context"
 	"fmt"
+	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 	"net"
@@ -115,6 +116,7 @@ func (s *Server) Run() error {
 	// 设置gRPC服务器
 	grpcServer := s.setupGRPCServer()
 	// 启动服务器并处理请求
+	log.Infof("Run grpc server on %s", s.address)
 	if err = s.serveRequests(grpcServer, lis); err != nil {
 		return fmt.Errorf("failed to serve: %w", err)
 	}
@@ -123,25 +125,33 @@ func (s *Server) Run() error {
 }
 
 // SetPeers 设置客户端节点在哈希环中的位置
-func (s *Server) SetPeers(peersAddress []string) {
+func (s *Server) SetPeers(peers []string, groups []*Group) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if len(peersAddress) == 0 {
-		peersAddress = []string{s.address}
+	if len(peers) == 0 {
+		peers = []string{s.address}
 	}
+	nodes := append(peers, s.address) // 哈希环加入自身
 
 	s.consistHash = NewConsistentHash(defaultRpcClientReplicas, nil)
-	s.consistHash.AddNodes(peersAddress...)
-	s.clients = make(map[string]*grpcGetter, len(peersAddress))
-	for _, peerAddress := range peersAddress {
+	s.consistHash.AddNodes(nodes...)
+	s.clients = make(map[string]*grpcGetter, len(peers))
+	for _, peerAddress := range peers {
 		// 根据传入的节点，为每一个node创建一个grpc客户端
 		s.clients[peerAddress] = &grpcGetter{addr: peerAddress}
+	}
+	for _, group := range groups {
+		group.RegisterPeers(s)
 	}
 }
 
 // PickPeer 根据具体的 key，选择节点
 func (s *Server) PickPeer(key string) (PeerGetter, bool) {
+	if key == "" {
+		return nil, false
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -149,7 +159,7 @@ func (s *Server) PickPeer(key string) (PeerGetter, bool) {
 	if peer == "" {
 		return nil, false
 	}
-	// 统一规定了传入的客户端节点名称为address
+	// 目前暂时统一规定传入的客户端节点名称为address（因为存在一个可能导致哈希环不一致的问题，即主机网卡可以存在不同IP的表现，而两个node中保存的IP不同会导致部分hash结果不一致，而死循环）
 	// 判断当前选择的节点为自身时返回nil
 	if peer == s.address {
 		return nil, false
