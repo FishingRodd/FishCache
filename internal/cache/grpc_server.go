@@ -41,7 +41,7 @@ func NewRPCServer(address string) (*Server, error) {
 }
 
 // Get 作为server根据client请求的 group name 和 key 返回对应缓存数据
-func (s *Server) Get(ctx context.Context, req *pb.GetRequest) (*pb.GetResponse, error) {
+func (s *Server) Get(_ context.Context, req *pb.GetRequest) (*pb.GetResponse, error) {
 	group := GetGroup(req.Group)
 	if group == nil {
 		return &pb.GetResponse{}, fmt.Errorf("group name is nil")

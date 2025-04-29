@@ -7,13 +7,13 @@ import (
 	"sync"
 )
 
-type cache struct {
+type Cache struct {
 	mu       sync.RWMutex
 	strategy *eviction.CacheUseLRU
 	maxBytes int64
 }
 
-func NewCache(maxBytes int64) (*cache, error) {
+func NewCache(maxBytes int64) (*Cache, error) {
 	if maxBytes <= 0 {
 		return nil, fmt.Errorf("cache size must be positive, got %d", maxBytes)
 	}
@@ -21,13 +21,13 @@ func NewCache(maxBytes int64) (*cache, error) {
 	onEvicted := func(key string, val eviction.Value) {
 		log.Warnf("Cache entry evicted: key=%s\n", key)
 	}
-	return &cache{
+	return &Cache{
 		maxBytes: maxBytes,
 		strategy: eviction.NewLRUCache(maxBytes, onEvicted),
 	}, nil
 }
 
-func (c *cache) get(key string) (ByteView, bool) {
+func (c *Cache) get(key string) (ByteView, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -41,7 +41,7 @@ func (c *cache) get(key string) (ByteView, bool) {
 	return ByteView{}, false
 }
 
-func (c *cache) add(key string, value ByteView) {
+func (c *Cache) add(key string, value ByteView) {
 	if c == nil {
 		return
 	}

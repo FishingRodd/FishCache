@@ -14,7 +14,7 @@ var (
 
 type Group struct {
 	name   string         // 一个 Group 可以认为是一个缓存的命名空间，每个 Group 拥有一个唯一的名称 name
-	cache  *cache         // 缓存值
+	cache  *Cache         // 缓存值
 	getter Getter         //缓存未命中时获取源数据的回调(callback)
 	peers  HashPeerPicker // 包含一致性哈希的节点选择器
 	flight *SingleFlight  // 防止瞬时高并发的数据结构
