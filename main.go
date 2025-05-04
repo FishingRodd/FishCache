@@ -1,6 +1,7 @@
 package main
 
 import (
+	"FishCache/consistent"
 	"FishCache/internal/cache"
 	"flag"
 	"fmt"
@@ -8,8 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
+	"time"
 )
 
 // 假定一个数据库
@@ -19,8 +20,8 @@ var testDB = map[string]string{
 	"Sam":  "567",
 }
 
-func createScoresGroup() *cache.Group {
-	return cache.NewGroup("scores", 2<<10, cache.GetterFunc(
+func createScoresGroup() {
+	cache.NewGroup("scores", 2<<10, cache.GetterFunc(
 		func(key string) ([]byte, error) {
 			if value, exists := testDB[key]; exists {
 				log.Printf("Load local key: %s\n", key)
@@ -34,36 +35,87 @@ func createScoresGroup() *cache.Group {
 
 func main() {
 	// 外部传参
-	var port int
-	var peers []string
-	flag.IntVar(&port, "port", 23333, "FishCache server port") // 服务运行端口
+	var addr string            // 服务运行地址 ip:port
+	var peers []string         // 邻居节点，使用","分割
+	var etcdServersIP []string // etcd服务地址，使用","分割
+	var etcdServiceName string
 	flag.Func("peers", "A list of peers separated by commas", func(s string) error {
-		// 将输入的字符串按照逗号分隔并转换为切片
 		peers = strings.Split(s, ",")
 		return nil
 	})
+	flag.Func("etcd", "register etcd server", func(s string) error {
+		etcdServersIP = strings.Split(s, ",")
+		return nil
+	})
+	flag.StringVar(&addr, "host", "", "FishCache node server host")
+	flag.StringVar(&etcdServiceName, "service", "", "service name")
 	flag.Parse()
+
+	// 目前支持手动设置peers和etcd注册发现模式
+	if len(peers) == 0 && len(etcdServersIP) == 0 {
+		log.Errorf("请 手动设置邻居 或 传递etcdIP获取邻居\n")
+		return
+	}
+	// 设置节点的通信源IP端口
+	if addr == "" {
+		log.Fatalf("FishCache node server host is empty")
+		return
+	}
+	// 服务名称，在etcd中key的prefix体现
+	if etcdServiceName == "" {
+		etcdServiceName = consistent.DefaultServiceName
+	}
+
 	// 日志初始化
 	logInit()
+
 	// 缓存组初始化
-	var groups []*cache.Group
-	scoresGroup := createScoresGroup()
-	groups = append(groups, scoresGroup)
+	createScoresGroup()
+
 	// RPC服务初始化
-	addr := "127.0.0.1:" + strconv.Itoa(port)
 	svr, err := cache.NewRPCServer(addr)
 	if err != nil {
 		log.Fatalf("acquire grpc server instance failed, %v", err)
 	}
+
 	// 设置节点与缓存组的一致性
-	svr.SetPeers(peers, groups)
+	if len(peers) != 0 {
+		svr.SetPeers(peers)
+	}
+
+	// 初始化服务器
+	if err = svr.InitServer(); err != nil {
+		log.Fatalf("failed to initialize server: %v", err)
+		return
+	}
+	// 发起服务注册，并定义服务停止时行为
+	if len(etcdServersIP) != 0 {
+		// 定义consistent中配置信息
+		consistent.Conf = &consistent.Config{
+			Etcd: &consistent.Etcd{
+				Address:     etcdServersIP,
+				Timeout:     5 * time.Second,
+				ServiceName: etcdServiceName,
+			},
+		}
+		go func() {
+			defer func() {
+				if svr != nil {
+					if err = svr.StopServer(); err != nil {
+						log.Errorf("Failed to stop server: %v", err)
+					}
+				}
+			}()
+			svr.RegisterEtcd()
+		}()
+	}
 	// 运行服务
-	err = svr.Run()
-	// grpcurl -plaintext -d "{\"group\": \"scores\", \"key\": \"Tom\"}" 127.0.0.1:23333 fishcache.CacheService/Get
+	err = svr.RunServer()
 	if err != nil {
 		log.Fatalf("failed to run server: %v", err)
 		return
 	}
+	// grpcurl -plaintext -d "{\"group\": \"scores\", \"key\": \"Tom\"}" 127.0.0.1:23333 fishcache.CacheService/Get
 }
 
 func logInit() {

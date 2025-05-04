@@ -53,9 +53,9 @@ func GetGroup(name string) *Group {
 
 // RegisterPeers 注入哈希环到Group中
 func (g *Group) RegisterPeers(peers HashPeerPicker) {
-	if g.peers != nil {
-		panic("RegisterPeerPicker called more than once")
-	}
+	//if g.peers != nil {
+	//	panic("RegisterPeerPicker called more than once")
+	//}
 	g.peers = peers
 }
 

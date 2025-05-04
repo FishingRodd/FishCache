@@ -2,6 +2,7 @@ package cache
 
 import (
 	pb "FishCache/api/groupcachepb"
+	"FishCache/internal/discovery/etcd"
 	"context"
 	"fmt"
 	log "github.com/sirupsen/logrus"
@@ -21,11 +22,13 @@ const (
 type Server struct {
 	pb.UnimplementedCacheServiceServer // 嵌入未实现的 gRPC 服务器接口
 
-	address     string                 // 服务器地址
-	isRunning   bool                   // 服务器运行状态
-	mu          sync.RWMutex           // 读写锁，保护并发访问
-	consistHash *ConsistentMap         // 一致性哈希映射
-	clients     map[string]*grpcGetter // 每一个远程节点对应一个 client
+	address       string                 // 服务器地址
+	isRunning     bool                   // 服务器运行状态
+	mu            sync.RWMutex           // 读写锁，保护并发访问
+	consistHash   *ConsistentMap         // 一致性哈希映射
+	clients       map[string]*grpcGetter // 每一个远程节点对应一个 client
+	stopChannel   chan error             // 服务器停止时触发的通道
+	updateChannel chan struct{}          // 服务器更新时触发的通道
 }
 
 func NewRPCServer(address string) (*Server, error) {
@@ -58,8 +61,8 @@ func (s *Server) Get(_ context.Context, req *pb.GetRequest) (*pb.GetResponse, er
 	}, nil
 }
 
-// 初始化服务器
-func (s *Server) initServer() error {
+// InitServer 初始化服务器
+func (s *Server) InitServer() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -68,6 +71,30 @@ func (s *Server) initServer() error {
 	}
 
 	s.isRunning = true
+	s.stopChannel = make(chan error)
+	s.updateChannel = make(chan struct{})
+	go func() {
+		for {
+			select {
+			case _ = <-s.updateChannel:
+				// 更新哈希环
+				peersAddr, err := etcd.ListServicePeers()
+				if err != nil {
+					log.Errorf("ListServicePeers error: %v", err)
+					return
+				}
+				s.SetPeers(peersAddr)
+			case err := <-s.stopChannel:
+				// 停止grpc服务
+				log.Errorf("handle error: %v", err)
+				if err = s.StopServer(); err != nil {
+					log.Errorf("Failed to stop server: %v", err)
+				}
+				return
+			default:
+			}
+		}
+	}()
 	return nil
 }
 
@@ -102,12 +129,8 @@ func (s *Server) serveRequests(grpcServer *grpc.Server, lis net.Listener) error 
 	return nil
 }
 
-// Run 启动服务器的主逻辑
-func (s *Server) Run() error {
-	// 初始化服务器
-	if err := s.initServer(); err != nil {
-		return fmt.Errorf("failed to initialize server: %w", err)
-	}
+// RunServer 启动服务器的主逻辑
+func (s *Server) RunServer() error {
 	// 设置监听器
 	lis, err := s.setupListener()
 	if err != nil {
@@ -116,7 +139,7 @@ func (s *Server) Run() error {
 	// 设置gRPC服务器
 	grpcServer := s.setupGRPCServer()
 	// 启动服务器并处理请求
-	log.Infof("Run grpc server on %s", s.address)
+	log.Infof("RunServer grpc server on %s", s.address)
 	if err = s.serveRequests(grpcServer, lis); err != nil {
 		return fmt.Errorf("failed to serve: %w", err)
 	}
@@ -124,8 +147,21 @@ func (s *Server) Run() error {
 	return nil
 }
 
+func (s *Server) StopServer() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.isRunning {
+		return nil
+	}
+
+	close(s.stopChannel)
+	s.isRunning = false
+	return nil
+}
+
 // SetPeers 设置客户端节点在哈希环中的位置
-func (s *Server) SetPeers(peers []string, groups []*Group) {
+func (s *Server) SetPeers(peers []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -141,7 +177,12 @@ func (s *Server) SetPeers(peers []string, groups []*Group) {
 		// 根据传入的节点，为每一个node创建一个grpc客户端
 		s.clients[peerAddress] = &grpcGetter{addr: peerAddress}
 	}
-	for _, group := range groups {
+	log.Infof("更新邻居: %s", peers)
+	s.updateGroupsPeers()
+}
+
+func (s *Server) updateGroupsPeers() {
+	for _, group := range GroupManager {
 		group.RegisterPeers(s)
 	}
 }
@@ -165,4 +206,17 @@ func (s *Server) PickPeer(key string) (PeerGetter, bool) {
 		return nil, false
 	}
 	return s.clients[peer], true
+}
+
+func (s *Server) RegisterEtcd() {
+	// 先对serviceName这一key开启watch监控
+	go etcd.DynamicServices(s.updateChannel)
+	// 发起服务注册
+	err := etcd.Register(s.stopChannel, s.address, s.updateChannel)
+
+	if err != nil {
+		s.stopChannel <- err
+		log.Fatalf("%e\n", err)
+		return
+	}
 }
